@@ -1,31 +1,20 @@
-import serial, argparse, binascii, struct, sys, time, uinput
+import argparse
+import struct
+import time
 from threading import Thread
+import serial.tools.list_ports
+import vgamepad as vg
 
-parser = argparse.ArgumentParser(description='DJI Mini 2 RC (also known as RC-N1, RCS231, WM161b-RC-N1, RCN1) <-> Linux joystick interface (uinput)')
+# Initialize Global Variables
+sequence_number = 0x34eb
+st = {"rh": 0, "rv": 0, "lh": 0, "lv": 0, "b1": 0, "b2": 0, "b3": 0, "b4": 0, "t1": 0}
+camera = 0
+s = None
 
-parser.add_argument('-p', '--port', help='RC Serial Port', required=True)
-
-args = parser.parse_args()
-
-maxValue = 32768
-
-events = (
-    uinput.BTN_PINKIE,
-    uinput.BTN_TRIGGER,
-    uinput.BTN_THUMB,
-    uinput.BTN_THUMB2,
-    uinput.ABS_WHEEL + (-32767, 32767, 0, 0),
-    uinput.ABS_X + (0, 32767, 0, 0),
-    uinput.ABS_Y + (0, 32767, 0, 0),
-    uinput.ABS_THROTTLE + (0, 32767, 0, 0),
-    uinput.ABS_RUDDER + (0, 32767, 0, 0),
-    )
-
-device = uinput.Device(events)
-time.sleep(1)
+# Set up Virtual Xbox Gamepad
+gamepad = vg.VX360Gamepad()
 
 def calc_checksum(packet, plength):
-
     crc = [0x0000, 0x1189, 0x2312, 0x329b, 0x4624, 0x57ad, 0x6536, 0x74bf,
     0x8c48, 0x9dc1, 0xaf5a, 0xbed3, 0xca6c, 0xdbe5, 0xe97e, 0xf8f7,
     0x1081, 0x0108, 0x3393, 0x221a, 0x56a5, 0x472c, 0x75b7, 0x643e,
@@ -58,36 +47,14 @@ def calc_checksum(packet, plength):
     0x6b46, 0x7acf, 0x4854, 0x59dd, 0x2d62, 0x3ceb, 0x0e70, 0x1ff9,
     0xf78f, 0xe606, 0xd49d, 0xc514, 0xb1ab, 0xa022, 0x92b9, 0x8330,
     0x7bc7, 0x6a4e, 0x58d5, 0x495c, 0x3de3, 0x2c6a, 0x1ef1, 0x0f78]
-
-    # Seeds
-    # v = 0x1012 #Naza M
-    # v = 0x1013 #Phantom 2
-    # v = 0x7000 #Naza M V2
-    v = 0x3692  #P3/P4/Mavic 
-
+    v = 0x3692
     for i in range(0, plength):
         vv = v >> 8
         v = vv ^ crc[((packet[i] ^ v) & 0xFF)]
     return v
 
 def calc_pkt55_hdr_checksum(seed, packet, plength):
-    arr_2A103 = [0x00,0x5E,0xBC,0xE2,0x61,0x3F,0xDD,0x83,0xC2,0x9C,0x7E,0x20,0xA3,0xFD,0x1F,0x41,
-        0x9D,0xC3,0x21,0x7F,0xFC,0xA2,0x40,0x1E,0x5F,0x01,0xE3,0xBD,0x3E,0x60,0x82,0xDC,
-        0x23,0x7D,0x9F,0xC1,0x42,0x1C,0xFE,0xA0,0xE1,0xBF,0x5D,0x03,0x80,0xDE,0x3C,0x62,
-        0xBE,0xE0,0x02,0x5C,0xDF,0x81,0x63,0x3D,0x7C,0x22,0xC0,0x9E,0x1D,0x43,0xA1,0xFF,
-        0x46,0x18,0xFA,0xA4,0x27,0x79,0x9B,0xC5,0x84,0xDA,0x38,0x66,0xE5,0xBB,0x59,0x07,
-        0xDB,0x85,0x67,0x39,0xBA,0xE4,0x06,0x58,0x19,0x47,0xA5,0xFB,0x78,0x26,0xC4,0x9A,
-        0x65,0x3B,0xD9,0x87,0x04,0x5A,0xB8,0xE6,0xA7,0xF9,0x1B,0x45,0xC6,0x98,0x7A,0x24,
-        0xF8,0xA6,0x44,0x1A,0x99,0xC7,0x25,0x7B,0x3A,0x64,0x86,0xD8,0x5B,0x05,0xE7,0xB9,
-        0x8C,0xD2,0x30,0x6E,0xED,0xB3,0x51,0x0F,0x4E,0x10,0xF2,0xAC,0x2F,0x71,0x93,0xCD,
-        0x11,0x4F,0xAD,0xF3,0x70,0x2E,0xCC,0x92,0xD3,0x8D,0x6F,0x31,0xB2,0xEC,0x0E,0x50,
-        0xAF,0xF1,0x13,0x4D,0xCE,0x90,0x72,0x2C,0x6D,0x33,0xD1,0x8F,0x0C,0x52,0xB0,0xEE,
-        0x32,0x6C,0x8E,0xD0,0x53,0x0D,0xEF,0xB1,0xF0,0xAE,0x4C,0x12,0x91,0xCF,0x2D,0x73,
-        0xCA,0x94,0x76,0x28,0xAB,0xF5,0x17,0x49,0x08,0x56,0xB4,0xEA,0x69,0x37,0xD5,0x8B,
-        0x57,0x09,0xEB,0xB5,0x36,0x68,0x8A,0xD4,0x95,0xCB,0x29,0x77,0xF4,0xAA,0x48,0x16,
-        0xE9,0xB7,0x55,0x0B,0x88,0xD6,0x34,0x6A,0x2B,0x75,0x97,0xC9,0x4A,0x14,0xF6,0xA8,
-        0x74,0x2A,0xC8,0x96,0x15,0x4B,0xA9,0xF7,0xB6,0xE8,0x0A,0x54,0xD7,0x89,0x6B,0x35]
-
+    arr_2A103 = [0x00,0x5E,0xBC,0xE2,0x61,0x3F,0xDD,0x83,0xC2,0x9C,0x7E,0x20,0xA3,0xFD,0x1F,0x41,0x9D,0xC3,0x21,0x7F,0xFC,0xA2,0x40,0x1E,0x5F,0x01,0xE3,0xBD,0x3E,0x60,0x82,0xDC,0x23,0x7D,0x9F,0xC1,0x42,0x1C,0xFE,0xA0,0xE1,0xBF,0x5D,0x03,0x80,0xDE,0x3C,0x62,0xBE,0xE0,0x02,0x5C,0xDF,0x81,0x63,0x3D,0x7C,0x22,0xC0,0x9E,0x1D,0x43,0xA1,0xFF,0x46,0x18,0xFA,0xA4,0x27,0x79,0x9B,0xC5,0x84,0xDA,0x38,0x66,0xE5,0xBB,0x59,0x07,0xDB,0x85,0x67,0x39,0xBA,0xE4,0x06,0x58,0x19,0x47,0xA5,0xFB,0x78,0x26,0xC4,0x9A,0x65,0x3B,0xD9,0x87,0x04,0x5A,0xB8,0xE6,0xA7,0xf9,0x1b,0x45,0xc6,0x98,0x7a,0x24,0xf8,0xa6,0x44,0x1a,0x99,0xc7,0x25,0x7b,0x3a,0x64,0x86,0xd8,0x5b,0x05,0xe7,0xb9,0x8c,0xd2,0x30,0x6e,0xed,0xb3,0x51,0x0f,0x4e,0x10,0xf2,0xac,0x2f,0x71,0x93,0xcd,0x11,0x4f,0xad,0xf3,0x70,0x2e,0xcc,0x92,0xd3,0x8d,0x6f,0x31,0xb2,0xec,0x0e,0x50,0xaf,0xf1,0x13,0x4d,0xce,0x90,0x72,0x2c,0x6d,0x33,0xd1,0x8f,0x0c,0x52,0xb0,0xee,0x32,0x6c,0x8e,0xd0,0x53,0x0d,0xef,0xb1,0xf0,0xae,0x4c,0x12,0x91,0xcf,0x2d,0x73,0xca,0x94,0x76,0x28,0xab,0xf5,0x17,0x49,0x08,0x56,0xb4,0xea,0x69,0x37,0xd5,0x8b,0x57,0x09,0xeb,0xb5,0x36,0x68,0x8a,0xd4,0x95,0xcb,0x29,0x77,0xf4,0xaa,0x48,0x16,0xE9,0xB7,0x55,0x0B,0x88,0xD6,0x34,0x6A,0x2B,0x75,0x97,0xC9,0x4A,0x14,0xf6,0xa8,0x74,0x2A,0xC8,0x96,0x15,0x4B,0xA9,0xf7,0xb6,0xe8,0x0a,0x54,0xd7,0x89,0x6b,0x35]
     chksum = seed
     for i in range(0, plength):
         chksum = arr_2A103[((packet[i] ^ chksum) & 0xFF)];
@@ -95,149 +62,103 @@ def calc_pkt55_hdr_checksum(seed, packet, plength):
 
 def send_duml(s, source, target, cmd_type, cmd_set, cmd_id, payload = None):
     global sequence_number
-    sequence_number = 0x34eb
+    sequence_number %= 0x10000
     packet = bytearray.fromhex(u'55')
-    length = 13
-    if payload is not None:
-        length = length + len(payload)
-
-    if length > 0x3ff:
-        print("Packet too large")
-        exit(1)
-
+    length = 13 + (len(payload) if payload else 0)
     packet += struct.pack('B', length & 0xff)
-    packet += struct.pack('B', (length >> 8) | 0x4) # MSB of length and protocol version
-    hdr_crc = calc_pkt55_hdr_checksum(0x77, packet, 3)
-    packet += struct.pack('B', hdr_crc)
+    packet += struct.pack('B', (length >> 8) | 0x4)
+    packet += struct.pack('B', calc_pkt55_hdr_checksum(0x77, packet, 3))
     packet += struct.pack('B', source)
     packet += struct.pack('B', target)
     packet += struct.pack('<H', sequence_number)
     packet += struct.pack('B', cmd_type)
     packet += struct.pack('B', cmd_set)
     packet += struct.pack('B', cmd_id)
-
-    if payload is not None:
-        packet += payload
-
-    crc = calc_checksum(packet, len(packet))
-    packet += struct.pack('<H',crc)
+    if payload: packet += payload
+    packet += struct.pack('<H', calc_checksum(packet, len(packet)))
     s.write(packet)
-    # print(' '.join(format(x, '02x') for x in packet))
-
     sequence_number += 1
 
-# Open serial.
-try:
-    s = serial.Serial(port=args.port, baudrate=115200)
-    print('Opened serial device:', s.name)
-except serial.SerialException as e:
-    print('Could not open serial device:', e)
+def parseInput(input_bytes):
+    val = int.from_bytes(input_bytes, byteorder='little')
+    # DJI range (364-1684) mapped to Xbox range (-32768 to 32767)
+    # Center (1024) = 0
+    output = int((val - 1024) * (32767 / 660))
+    return max(min(output, 32767), -32767)
+
+# --- SERIAL CONNECTION ---
+ports = serial.tools.list_ports.comports(True)
+for p in ports:
+    if "For Protocol" in p.description:
+        s = serial.Serial(port=p.name, baudrate=115200, timeout=0.05)
+        print(f"Connected to {p.name}")
+        break
+
+if not s:
+    print("\nFATAL ERROR: DJI USB VCOM Port not found.")
     exit(1)
 
-# Stylistic: Newline for spacing.
-print('\nPress Ctrl+C (or interrupt) to stop.\n')
+# --- GAMEPAD UPDATE THREAD ---
+def gamepad_loop():
+    while True:
+        time.sleep(0.01)
+        gamepad.left_joystick(int(st["lh"]), int(st["lv"]))
+        gamepad.right_joystick(int(st["rh"]), int(st["rv"]))
+        
+        # Mapping DJI Buttons to Xbox Buttons
+        if st['b1']: gamepad.press_button(vg.XUSB_BUTTON.XUSB_GAMEPAD_A)
+        else: gamepad.release_button(vg.XUSB_BUTTON.XUSB_GAMEPAD_A)
+        
+        if st['b2']: gamepad.press_button(vg.XUSB_BUTTON.XUSB_GAMEPAD_B)
+        else: gamepad.release_button(vg.XUSB_BUTTON.XUSB_GAMEPAD_B)
+        
+        if st['b3']: gamepad.press_button(vg.XUSB_BUTTON.XUSB_GAMEPAD_X)
+        else: gamepad.release_button(vg.XUSB_BUTTON.XUSB_GAMEPAD_X)
+        
+        if st['b4']: gamepad.press_button(vg.XUSB_BUTTON.XUSB_GAMEPAD_Y)
+        else: gamepad.release_button(vg.XUSB_BUTTON.XUSB_GAMEPAD_Y)
+        
+        gamepad.update()
 
-# Process input (min 364, center 1024, max 1684) -> (min 0, center 16384, max 32768)
-def parseInput(input, name):
-    output = (int.from_bytes(input, byteorder='little') - 364) * 4096 // 165
+Thread(target=gamepad_loop, daemon=True).start()
 
-    return output
-
-st = {"rh": 0, "rv": 0, "lh": 0, "lv": 0, "b1": 0, "b2": 0, "b3": 0, "b4": 0, "t1": 0}
-
-def threaded_function():
-    while(True):
-        time.sleep(0.1)
-        #print("working ...")
-        device.emit(uinput.ABS_X, int(st["lh"]), syn=False)
-        device.emit(uinput.ABS_Y, int(st["lv"]), syn=False)
-        device.emit(uinput.ABS_THROTTLE, int(st["rh"]), syn=False)
-        device.emit(uinput.ABS_RUDDER, int(st["rv"]))
-        device.emit(uinput.BTN_PINKIE, int(st['b1']))
-        device.emit(uinput.BTN_TRIGGER, int(st['b2']))
-        device.emit(uinput.BTN_THUMB, int(st['b3']))
-        device.emit(uinput.BTN_THUMB2, int(st['b4']))
-        device.emit(uinput.ABS_WHEEL, int(st['t1']))
-
-thread = Thread(target = threaded_function, args = ())
-thread.start()
-#thread.join()
-
+print('\nDji Windows Simulator Link Started...')
 try:
-    # enable simulator mode for RC (without this stick positions are sent very slow by RC)
+    # Enable Simulator Mode
     send_duml(s, 0x0a, 0x06, 0x40, 0x06, 0x24, bytearray.fromhex('01'))
 
     while True:
+        # Request Stick Data (38 byte response)
+        send_duml(s, 0x0a, 0x06, 0x40, 0x06, 0x01, bytearray())
+        # Request Button Data (58 byte response)
+        send_duml(s, 0x0a, 0x06, 0x40, 0x06, 0x27, bytearray())
 
-        # time.sleep(0.05)
-        # read channel values
-        send_duml(s, 0x0a, 0x06, 0x40, 0x06, 0x01, bytearray.fromhex(''))
-        send_duml(s, 0x0a, 0x06, 0x40, 0x06, 0x27, bytearray.fromhex(''))
+        data_in = s.read(256) # Read large chunk to ensure we catch packets
+        if data_in:
+            for i in range(len(data_in)):
+                if data_in[i] == 0x55:
+                    pkt = data_in[i:]
+                    if len(pkt) < 4: continue
+                    pl = (pkt[2] << 8 | pkt[1]) & 0x3FF
+                    if len(pkt) < pl: continue
+                    
+                    msg = pkt[:pl]
+                    if pl == 38: # Stick Data
+                        st["rh"] = parseInput(msg[13:15])
+                        st["rv"] = parseInput(msg[16:18])
+                        st["lv"] = parseInput(msg[19:21])
+                        st["lh"] = parseInput(msg[22:24])
+                    
+                    if pl == 58: # Button/Status Data
+                        # Extracting buttons from specific byte offset
+                        ival = int.from_bytes(msg[28:30], byteorder="big")
+                        st['b1'] = 1 if ival & 0x1060 == 0x1060 else 0
+                        st['b2'] = 1 if ival & 0x1080 == 0x1080 else 0
+                        st['b3'] = 1 if ival & 0x1004 == 0x1004 else 0
+                        st['b4'] = 1 if ival & 0x1002 == 0x1002 else 0
+        time.sleep(0.01)
 
-        # read duml
-        buffer = bytearray.fromhex('')
-        while True:
-            b = s.read(1)
-            if b == bytearray.fromhex('55'):
-                buffer.extend(b)
-                ph = s.read(2)
-                buffer.extend(ph)
-                ph = struct.unpack('<H', ph)[0]
-                pl = 0b0000001111111111 & ph
-                pv = 0b1111110000000000 & ph
-                pv = pv >> 10
-                pc = s.read(1)
-                buffer.extend(pc)
-                pd = s.read(pl - 4)
-                buffer.extend(pd)
-                break
-            else:
-                break
-        data = buffer
-        if len(data) == 58:
-            #print(str(len(data)) + "\t" + ' '.join(format(x, '02x') for x in data))
-            pass
-
-        # Reverse-engineered. Controller input seems to always be len 38 and 58 for two duml commands respectively
-        if len(data) == 38:
-            st["rh"] = parseInput(data[13:15], 'lv')
-            st["rv"] = parseInput(data[16:18], 'lh')
-
-            st["lv"] = parseInput(data[19:21], 'rv')
-            st["lh"] = parseInput(data[22:24], 'rh')
-
-            camera = parseInput(data[25:27], 'cam')
-
-        if len(data) == 58:
-            bytes = data[28:30]
-            ival = int.from_bytes(bytes, byteorder="big")
-            bits = bin(ival).lstrip('0b')
-            #print(ival & 0x2060 == 0x2060)
-            #print(bits)
-            st['b1'] = 1 if ival & 0x1060 == 0x1060 else 0
-            st['b2'] = 1 if ival & 0x1080 == 0x1080 else 0
-            st['b3'] = 1 if ival & 0x1004 == 0x1004 else 0
-            st['b4'] = 1 if ival & 0x1002 == 0x1002 else 0
-
-            bytes2 = data[27:29]
-            ival2 = int.from_bytes(bytes2, byteorder="big")
-            bits2 = bin(ival2).lstrip('0b')
-            st['t1'] = 32767 if ival2 == 0x0 else -32767 if ival2 & 0x20 == 0x20 else 0
-            #print(st)
-            #with uinput.Device(events) as device:
-#            time.sleep(0.1)
-        #else:
-            # print(len(data))
-
-            # Log to console.
-            #print('L: H{0:06d},V{1:06d}; R: H{2:06d},V{3:06d}, CAM: {4:06d}\n'.format(left_horizontal, left_vertical, right_horizontal, right_vertical, camera), end='')
 except serial.SerialException as e:
-    # Stylistic: Newline to stop data update and spacing.
-    print('\n\nCould not read/write:', e)
+    print(f'\nConnection Error: {e}')
 except KeyboardInterrupt:
-    # Stylistic: Newline to stop data update and spacing.
-    print('\n\nDetected keyboard interrupt.')
-
-    pass
-
-print('Stopping.')
+    print('\nStopping.')
